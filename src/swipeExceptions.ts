@@ -91,8 +91,6 @@ const exceptions = [
   ".circlepad",
   // Vehicle Status Card (https://github.com/ngocjohn/vehicle-info-card)
   "vehicle-info-card",
-  // Vehicle Status Card (https://github.com/ngocjohn/vehicle-status-card)
-  "vehicle-status-card",
   // Lovelace Vacuum Map card (https://github.com/PiotrMachowski/lovelace-xiaomi-vacuum-map-card)
   "xiaomi-vacuum-map-card",
 ].join(",");
