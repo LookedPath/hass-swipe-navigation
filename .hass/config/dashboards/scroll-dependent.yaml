@@ -1,0 +1,59 @@
+swipe_nav:
+  swipe_amount: 1
+  logger_level: verbose
+
+views:
+
+  - title: Scroll Dependent
+    type: sections
+    sections:
+      - type: grid
+        cards:
+          - type: markdown
+            title: View 1
+            content: Content...
+
+          - type: entities
+            title: Scrollable
+            entities:
+              - entity: sun.sun
+              - entity: sun.sun
+              - entity: sun.sun
+              - entity: sun.sun
+              - entity: sun.sun
+              - entity: sun.sun
+              - entity: sun.sun
+              - entity: sun.sun
+              - entity: sun.sun
+              - entity: sun.sun
+              - entity: sun.sun
+              - entity: sun.sun
+              - entity: sun.sun
+              - entity: sun.sun
+              - entity: sun.sun
+            layout_options:
+              grid_rows: 3
+
+          - type: entities
+            title: Non-Scrollable
+            entities:
+              - entity: sun.sun
+
+          - type: entities
+            title: Horizontally Scrollable
+            entities:
+              - entity: sun.sun
+            header:
+              type: buttons
+              entities:
+                - entity: light.main_light
+                  name: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+
+  - title: View 2
+    type: sections
+    sections:
+      - type: grid
+        cards:
+          - type: markdown
+            title: View 2
+            content: Content...

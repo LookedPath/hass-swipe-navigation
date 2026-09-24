@@ -2,13 +2,29 @@ import { ConfigManager } from "./configManager";
 import { Logger } from "./logger";
 import { LOG_TAG } from "./loggerUtils";
 import { PageObjectManager } from "./pageObjectManager";
-import { exceptions } from "./swipeExceptions";
+import {
+  plainSelectors,
+  scrollDependentSelectors,
+  allScopedSelectors,
+  scopedExceptions,
+  anyExceptionSelector,
+} from "./swipeExceptions";
+
+// Cap on how many classes reach the logs, so that a single debug line stays
+// readable when an element stacks a long list of them.
+const MAX_LOGGED_CLASSES = 4;
 
 class SwipeManager {
   static #xDown: number | null;
   static #yDown: number | null;
   static #xDiff: number | null;
   static #yDiff: number | null;
+
+  // Per-axis blocks from scroll-dependent exceptions. A non-null log marks
+  // that axis as blocked; it is decided at pointer start from overflow, and
+  // emitted at pointer end if the user's swipe direction matches the axis.
+  static #blockedHorizontalLog: string | null = null;
+  static #blockedVerticalLog: string | null = null;
 
   static #pointerEventsAbortController: AbortController | null = null;
 
@@ -55,6 +71,45 @@ class SwipeManager {
     }
   }
 
+  static #areBothAxesBlocked() {
+    return this.#blockedHorizontalLog != null && this.#blockedVerticalLog != null;
+  }
+
+  /**
+   * Renders an element the way the exception list is written — node name, id and
+   * classes concatenated into a CSS selector — so that a log line can be matched
+   * against the entries of swipeExceptions.ts.
+   *
+   * At most MAX_LOGGED_CLASSES classes are listed; the rest are only counted.
+   */
+  static #describeElement(element: Element) {
+    const nodeName = element.nodeName.toLowerCase();
+    const id = element.id ? `#${element.id}` : "";
+
+    // classList, not className: on SVG elements the latter is an
+    // SVGAnimatedString rather than a string.
+    const classes = Array.from(element.classList);
+    const listedClasses = classes.slice(0, MAX_LOGGED_CLASSES).map((c) => `.${c}`).join("");
+    const omittedClasses = classes.length - MAX_LOGGED_CLASSES;
+    const omittedSuffix = omittedClasses > 0 ? ` (+${omittedClasses} more)` : "";
+
+    return `${nodeName}${id}${listedClasses}${omittedSuffix}`;
+  }
+
+  static #applyScrollDependentBlock(
+    element: Element,
+    interactionType: string,
+    scopeSuffix: string = "",
+  ) {
+    const description = this.#describeElement(element);
+    if (this.#blockedHorizontalLog == null && element.scrollWidth > element.clientWidth) {
+      this.#blockedHorizontalLog = `Ignoring ${interactionType} on horizontally scrollable "${description}"${scopeSuffix}.`;
+    }
+    if (this.#blockedVerticalLog == null && element.scrollHeight > element.clientHeight) {
+      this.#blockedVerticalLog = `Ignoring ${interactionType} on vertically scrollable "${description}"${scopeSuffix}.`;
+    }
+  }
+
   static #handlePointerStart(event: TouchEvent | MouseEvent) {
 
     let interactionType;
@@ -68,7 +123,7 @@ class SwipeManager {
     }
 
     if (ConfigManager.getCurrentConfig().getEnable() == false) {
-      Logger.logd(LOG_TAG, "Ignoring " + interactionType + ": Swipe navigation is disabled in the config.");
+      Logger.logd(LOG_TAG, `Ignoring ${interactionType}: Swipe navigation is disabled in the config.`);
       return; // Ignore swipe: Swipe is disabled in the config
     }
 
@@ -77,7 +132,7 @@ class SwipeManager {
       const activeTabIndex = ConfigManager.getCurrentViewIndex();
 
       if (views != null && activeTabIndex != null && views[activeTabIndex].subview) {
-        Logger.logd(LOG_TAG, "Ignoring " + interactionType + ": Swipe navigation on subviews is disabled in the config.");
+        Logger.logd(LOG_TAG, `Ignoring ${interactionType}: Swipe navigation on subviews is disabled in the config.`);
         return; // Ignore swipe: Swipe on subviews is disabled in the config
       }
     }
@@ -85,32 +140,60 @@ class SwipeManager {
     if (window.TouchEvent != null && event instanceof TouchEvent && event.touches.length > 1) {
       this.#xDown = null;
       this.#yDown = null;
-      Logger.logd(LOG_TAG, "Ignoring " + interactionType + ": multiple touchpoints detected.");
+      Logger.logd(LOG_TAG, `Ignoring ${interactionType}: multiple touchpoints detected.`);
       return; // Ignore swipe: Multitouch detected
     } else if (event instanceof MouseEvent && !ConfigManager.getCurrentConfig().getEnableMouseSwipe()) {
       this.#xDown = null;
       this.#yDown = null;
-      Logger.logd(LOG_TAG, "Ignoring " + interactionType + ": swiping via mouse is disabled.");
+      Logger.logd(LOG_TAG, `Ignoring ${interactionType}: swiping via mouse is disabled.`);
       return;
     }
 
-    if (typeof event.composedPath() == "object") {
-      for (const element of event.composedPath()) {
-        if (element instanceof Element) {
-          if (element.nodeName == "HUI-VIEW") {
-            // hui-view is the root element of the Home Assistant dashboard, so we can stop here.
-            break;
-          } else {
-            if (element.matches && element.matches(exceptions)) {
-              Logger.logd(LOG_TAG, "Ignoring " + interactionType + " on \""
-                + (element.nodeName != null ? element.nodeName.toLowerCase() : "unknown")
-                + "\".");
-              return; // Ignore swipe
+    this.#blockedHorizontalLog = null;
+    this.#blockedVerticalLog = null;
+
+    const path = event.composedPath();
+    if (typeof path == "object") {
+      for (const element of path) {
+        if (!(element instanceof Element)) continue;
+        if (element.nodeName == "HUI-VIEW") {
+          // hui-view is the root element of the Home Assistant dashboard, so we can stop here.
+          break;
+        }
+
+        // Fast early-out: if the element doesn't match any exception selector,
+        // skip the per-bucket checks entirely.
+        if (!anyExceptionSelector || !element.matches(anyExceptionSelector)) continue;
+
+        if (plainSelectors && element.matches(plainSelectors)) {
+          Logger.logd(LOG_TAG, `Ignoring ${interactionType} on "${this.#describeElement(element)}".`);
+          return; // Ignore swipe
+        }
+
+        if (!this.#areBothAxesBlocked() && scrollDependentSelectors && element.matches(scrollDependentSelectors)) {
+          this.#applyScrollDependentBlock(element, interactionType);
+        }
+
+        if (allScopedSelectors && element.matches(allScopedSelectors)) {
+          const root = element.getRootNode();
+          if (root instanceof ShadowRoot) {
+            for (const scoped of scopedExceptions) {
+              if (!root.host.matches(scoped.host)) continue;
+              if (!element.matches(scoped.selector)) continue;
+
+              if (scoped.scrollDependent) {
+                if (this.#areBothAxesBlocked()) continue;
+                this.#applyScrollDependentBlock(element, interactionType, ` scoped to "${scoped.host}"`);
+              } else {
+                Logger.logd(LOG_TAG, `Ignoring ${interactionType} on "${this.#describeElement(element)}", matching scoped exception "${scoped.host} >> ${scoped.selector}".`);
+                return; // Ignore swipe (scoped exception)
+              }
             }
           }
         }
       }
     }
+
     if (window.TouchEvent != null && event instanceof TouchEvent) {
       this.#xDown = event.touches[0].clientX;
       this.#yDown = event.touches[0].clientY;
@@ -136,19 +219,43 @@ class SwipeManager {
         throw new Error(`Unhandled case: ${eventCheck}`);
       }
 
-      if (Math.abs(this.#xDiff) > Math.abs(this.#yDiff) && ConfigManager.getCurrentConfig().getPreventDefault()) event.preventDefault();
+      if (
+        Math.abs(this.#xDiff) > Math.abs(this.#yDiff)
+        && this.#blockedHorizontalLog == null // --> not blocked
+        && ConfigManager.getCurrentConfig().getPreventDefault()
+      ) {
+        event.preventDefault();
+      }
     }
   }
 
   static #handlePointerEnd() {
     if (this.#xDiff != null && this.#yDiff != null) {
-      if (Math.abs(this.#xDiff) < Math.abs(this.#yDiff)) {
-        Logger.logd(LOG_TAG, "Swipe ignored, vertical movement.");
+      const isVerticalMovement = Math.abs(this.#xDiff) < Math.abs(this.#yDiff);
+      const isHorizontalMovement = !isVerticalMovement;
 
-      } else {  // Horizontal movement
-        if (Math.abs(this.#xDiff) < Math.abs(screen.width * ConfigManager.getCurrentConfig().getSwipeAmount())) {
-          Logger.logd(LOG_TAG, "Swipe ignored, too short.");
+      const swipeMagnitude = Math.abs(isVerticalMovement ? this.#yDiff : this.#xDiff);
+      const screenSize = isVerticalMovement ? screen.height : screen.width;
+      const isShortSwipe = swipeMagnitude < screenSize * ConfigManager.getCurrentConfig().getSwipeAmount();
 
+      const blockedVerticalLog = this.#blockedVerticalLog;
+      const blockedHorizontalLog = this.#blockedHorizontalLog;
+      const blockVertical = blockedVerticalLog != null;
+      const blockHorizontal = blockedHorizontalLog != null;
+
+      if (isShortSwipe) {
+        Logger.logd(LOG_TAG, "Swipe ignored, too short.");
+
+      } else if (isVerticalMovement) {
+        if (blockVertical) {
+          Logger.logd(LOG_TAG, blockedVerticalLog);
+        } else {
+          Logger.logd(LOG_TAG, "Swipe ignored, vertical movement.");
+        }
+
+      } else if (isHorizontalMovement) {
+        if (blockHorizontal) {
+          Logger.logd(LOG_TAG, blockedHorizontalLog);
         } else {
           const directionLeft = this.#xDiff < 0;
 
@@ -160,6 +267,11 @@ class SwipeManager {
             this.animatedNavigateTo(nextViewName, directionLeft);
           }
         }
+
+      } else {
+        // TypeScript will error at compile-time if a case is missing
+        const exhaustiveCheck: never = isVerticalMovement;
+        throw new Error(`Unhandled case: ${exhaustiveCheck}`);
       }
     }
     this.#xDown = this.#yDown = this.#xDiff = this.#yDiff = null;
@@ -179,16 +291,13 @@ class SwipeManager {
 
     const incrementStep = directionLeft ? -1 : 1;
 
-    let found = false;
-
-    while (!found) {
+    while (true) {
       nextTabIndex += incrementStep;
 
       if (nextTabIndex == -1 || nextTabIndex == views.length) {
         if (ConfigManager.getCurrentConfig().getWrap()) {
           nextTabIndex = (nextTabIndex + views.length) % views.length;
         } else {
-          found = true;
           nextTabIndex = -1;
           stopReason = "Edge has been reached and wrap is disabled.";
           break;
@@ -197,7 +306,6 @@ class SwipeManager {
 
       if (nextTabIndex == activeTabIndex) {
         // A complete cycle has been done. Stop to avoid infinite loop.
-        found = true;
         nextTabIndex = -1;
         stopReason = "Error, no viable tabs found for swiping.";
         break;
@@ -213,7 +321,7 @@ class SwipeManager {
         continue;
       }
 
-      found = true;
+      break;
     }
 
     if (stopReason != null) {
@@ -303,7 +411,7 @@ class SwipeManager {
     const targetUrl = "/" + panelName + "/" + viewName + queryString + hashFragment;
 
     if (window.location.pathname + window.location.search + window.location.hash !== targetUrl) {
-      window.history.pushState(null,"",targetUrl);
+      window.history.pushState(null, "", targetUrl);
       window.dispatchEvent(new CustomEvent("location-changed"));
     }
   }

@@ -80,6 +80,13 @@
       show_in_sidebar: true
       filename: ./dashboards/one-badges-scroll.yaml
 
+    one-heading-badges:
+      mode: yaml
+      title: One heading badges
+      icon: mdi:format-header-1
+      show_in_sidebar: true
+      filename: ./dashboards/one-heading-badges.yaml
+
     one-scrollbar:
       mode: yaml
       title: One scrollbar
@@ -121,6 +128,13 @@
       icon: mdi:lightbulb
       show_in_sidebar: true
       filename: ./dashboards/one-tile.yaml
+
+    scroll-dependent:
+      mode: yaml
+      title: Scroll dependent
+      icon: mdi:pan-vertical
+      show_in_sidebar: true
+      filename: ./dashboards/scroll-dependent.yaml
 
     skip-all:
       mode: yaml
